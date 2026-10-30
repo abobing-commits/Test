@@ -1,0 +1,699 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#080808">
+  <title>Перематери Илюшку!</title>
+  <style>
+    :root {
+      --normal-image: url("https://i.imgur.com/gyjiB1r.jpeg");
+      --laugh-image: url("https://i.imgur.com/DMU0B3f.jpeg");
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      min-height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #080808;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body { color: #fff; }
+
+    /* Полноэкранные слои фона: второй становится видимым на время смеха. */
+    .background {
+      position: fixed;
+      inset: 0;
+      background-size: cover;
+      background-position: center bottom;
+      background-repeat: no-repeat;
+      will-change: opacity, filter;
+    }
+
+    #normal-background {
+      z-index: 0;
+      background-image: var(--normal-image);
+      opacity: 1;
+      transition: opacity 80ms linear;
+    }
+
+    #laugh-background {
+      z-index: 1;
+      background-image: var(--laugh-image);
+      opacity: 0;
+      transition: opacity 50ms linear;
+    }
+
+    body.laughing #normal-background { opacity: 0; }
+    body.laughing #laugh-background { opacity: 1; }
+
+    /* Лёгкое затемнение помогает читать текст, не создавая отдельной панели. */
+    #vignette {
+      position: fixed;
+      z-index: 2;
+      inset: 0;
+      pointer-events: none;
+      background: linear-gradient(180deg, rgba(0,0,0,.35), transparent 24%, transparent 66%, rgba(0,0,0,.34));
+    }
+
+    #game {
+      position: relative;
+      z-index: 3;
+      width: 100%;
+      height: 100%;
+      min-height: 100dvh;
+      isolation: isolate;
+    }
+
+    /* Тонкий таймер на самом верхнем краю экрана. */
+    #timer-track {
+      position: absolute;
+      z-index: 10;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 4px;
+      background: rgba(255,255,255,.25);
+      overflow: hidden;
+    }
+
+    #timer-progress {
+      width: 100%;
+      height: 100%;
+      background: #fff;
+      transform-origin: left center;
+      transform: scaleX(1);
+      will-change: transform;
+      box-shadow: 0 0 9px rgba(255,255,255,.65);
+    }
+
+    .hud {
+      position: absolute;
+      top: calc(17px + var(--safe-top));
+      z-index: 5;
+      font-variant-numeric: tabular-nums;
+      text-shadow: 0 2px 8px rgba(0,0,0,.9), 0 1px 2px #000;
+      user-select: none;
+    }
+
+    #score {
+      left: max(18px, env(safe-area-inset-left, 0px));
+      font-size: 14px;
+      font-weight: 650;
+      letter-spacing: .03em;
+      opacity: .96;
+    }
+
+    #lives {
+      right: max(18px, env(safe-area-inset-right, 0px));
+      font-size: clamp(17px, 4.6vw, 23px);
+      letter-spacing: 2px;
+      white-space: nowrap;
+    }
+
+    #word-area {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 70px 18px 115px;
+      pointer-events: none;
+    }
+
+    #word {
+      max-width: 100%;
+      margin: 0;
+      color: #fff;
+      font-size: clamp(42px, 11vw, 100px);
+      line-height: 1.04;
+      font-weight: 900;
+      letter-spacing: .035em;
+      text-align: center;
+      overflow-wrap: anywhere;
+      -webkit-text-stroke: 1.5px rgba(0,0,0,.85);
+      paint-order: stroke fill;
+      text-shadow: 0 3px 0 #000, 0 5px 18px rgba(0,0,0,.95), 0 0 35px rgba(0,0,0,.55);
+      text-transform: uppercase;
+    }
+
+    #answer-form {
+      position: absolute;
+      z-index: 6;
+      left: 50%;
+      bottom: calc(22px + var(--safe-bottom));
+      transform: translateX(-50%);
+      width: min(560px, calc(100% - 30px));
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
+
+    #answer-input {
+      display: block;
+      flex: 1 1 auto;
+      width: 0;
+      min-width: 0;
+      height: 54px;
+      padding: 0 17px;
+      border: 1px solid rgba(255,255,255,.43);
+      border-radius: 14px;
+      outline: none;
+      background: rgba(0,0,0,.58);
+      color: #fff;
+      font: inherit;
+      font-size: 16px;
+      font-weight: 600;
+      box-shadow: 0 5px 22px rgba(0,0,0,.22);
+      backdrop-filter: blur(7px);
+      -webkit-backdrop-filter: blur(7px);
+    }
+
+    #answer-input::placeholder { color: rgba(255,255,255,.76); }
+    #answer-input:focus { border-color: rgba(255,255,255,.92); background: rgba(0,0,0,.72); }
+
+    #answer-button {
+      flex: 0 0 auto;
+      min-width: 104px;
+      height: 54px;
+      padding: 0 17px;
+      border: 1px solid rgba(255,255,255,.42);
+      border-radius: 14px;
+      background: rgba(255,255,255,.92);
+      color: #111;
+      font: inherit;
+      font-size: 15px;
+      font-weight: 800;
+      cursor: pointer;
+      box-shadow: 0 5px 22px rgba(0,0,0,.22);
+      transition: transform 100ms ease, background 100ms ease;
+    }
+
+    #answer-button:active { transform: scale(.96); background: #fff; }
+    #answer-input:disabled, #answer-button:disabled { opacity: .55; }
+
+    /* Стартовый экран: заголовок сверху, запуск снизу, без центральной панели. */
+    body:not(.started) #game { visibility: hidden; }
+
+    #start-screen {
+      position: fixed;
+      z-index: 25;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      padding: calc(8vh + var(--safe-top)) 20px calc(30px + var(--safe-bottom));
+      text-align: center;
+      pointer-events: auto;
+    }
+
+    body.started #start-screen { display: none; }
+
+    #start-title {
+      max-width: 100%;
+      margin: 0;
+      color: #fff;
+      font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+      font-size: clamp(42px, 10vw, 88px);
+      line-height: .98;
+      font-weight: 900;
+      letter-spacing: .015em;
+      text-wrap: balance;
+      -webkit-text-stroke: 1px rgba(0,0,0,.8);
+      text-shadow: 0 4px 0 #000, 0 7px 24px rgba(0,0,0,.95);
+    }
+
+    #start-button {
+      min-width: min(260px, 78vw);
+      min-height: 60px;
+      padding: 15px 34px;
+      border: 1px solid rgba(255,255,255,.8);
+      border-radius: 16px;
+      background: rgba(255,255,255,.93);
+      color: #111;
+      font: inherit;
+      font-size: 23px;
+      font-weight: 900;
+      letter-spacing: .02em;
+      cursor: pointer;
+      box-shadow: 0 6px 26px rgba(0,0,0,.35);
+      backdrop-filter: blur(7px);
+      -webkit-backdrop-filter: blur(7px);
+      transition: transform 100ms ease, background 100ms ease;
+    }
+
+    #start-button:active {
+      transform: scale(.96);
+      background: #fff;
+    }
+
+    /* Красная вспышка и тряска включаются при потере жизни. */
+    #red-flash {
+      position: fixed;
+      z-index: 20;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0;
+      background: rgba(255, 0, 20, .48);
+    }
+
+    body.glitch #red-flash { animation: red-flash 360ms steps(2, end) both; }
+    body.glitch #game { animation: screen-shake 420ms cubic-bezier(.36,.07,.19,.97) both; }
+    body.glitch #laugh-background { filter: saturate(1.3) contrast(1.12); }
+
+    @keyframes red-flash {
+      0% { opacity: 0; }
+      18% { opacity: .9; }
+      34% { opacity: .15; }
+      52% { opacity: .65; }
+      100% { opacity: 0; }
+    }
+
+    @keyframes screen-shake {
+      0%, 100% { transform: translate3d(0,0,0); }
+      15% { transform: translate3d(-7px,2px,0) skewX(-.5deg); }
+      30% { transform: translate3d(6px,-2px,0); }
+      45% { transform: translate3d(-4px,1px,0) skewX(.4deg); }
+      60% { transform: translate3d(4px,0,0); }
+      75% { transform: translate3d(-2px,-1px,0); }
+    }
+
+    #game-over {
+      position: fixed;
+      z-index: 30;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 12px;
+      padding: 24px;
+      text-align: center;
+      background: rgba(0,0,0,.48);
+      text-shadow: 0 2px 14px #000;
+    }
+
+    #game-over.visible { display: flex; }
+    #game-over h2 { margin: 0; font-size: clamp(34px, 8vw, 58px); font-weight: 900; }
+    #final-score { margin: 0; font-size: 18px; font-weight: 650; }
+
+    #restart-button {
+      margin-top: 12px;
+      border: 1px solid rgba(255,255,255,.75);
+      border-radius: 14px;
+      padding: 13px 22px;
+      background: rgba(255,255,255,.92);
+      color: #111;
+      font: inherit;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    @media (max-width: 380px) {
+      #answer-form { gap: 6px; width: calc(100% - 22px); }
+      #answer-button { min-width: 88px; padding: 0 11px; }
+      #answer-input { padding: 0 12px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; }
+      body.glitch #game { animation-duration: 1ms; }
+      body.glitch #red-flash { animation-duration: 1ms; }
+    }
+  </style>
+</head>
+<body>
+  <div id="normal-background" class="background" aria-hidden="true"></div>
+  <div id="laugh-background" class="background" aria-hidden="true"></div>
+  <div id="vignette" aria-hidden="true"></div>
+  <div id="red-flash" aria-hidden="true"></div>
+
+  <section id="start-screen" aria-labelledby="start-title">
+    <h1 id="start-title">Перематери Илюшку!</h1>
+    <button id="start-button" type="button">Погнали!</button>
+  </section>
+
+  <main id="game" aria-label="Словесная игра">
+    <div id="timer-track" role="progressbar" aria-label="Оставшееся время" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">
+      <div id="timer-progress"></div>
+    </div>
+
+    <div id="score" class="hud">ОЧКИ: <span id="score-value">0</span></div>
+    <div id="lives" class="hud" aria-label="Жизни">❤️❤️❤️❤️❤️</div>
+
+    <section id="word-area" aria-live="polite">
+      <h1 id="word">ГОТОВ?</h1>
+    </section>
+
+    <form id="answer-form" autocomplete="off">
+      <input
+        id="answer-input"
+        type="text"
+        placeholder="Введи слово…"
+        aria-label="Твой ответ"
+        autocapitalize="off"
+        spellcheck="false"
+        enterkeyhint="send"
+        required
+      >
+      <button id="answer-button" type="submit">Ответить</button>
+    </form>
+  </main>
+
+  <section id="game-over" role="dialog" aria-modal="true" aria-labelledby="game-over-title">
+    <h2 id="game-over-title">Отпетушили тя!</h2>
+    <p id="final-score">Твой счёт: 0</p>
+    <button id="restart-button" type="button">Играть снова</button>
+  </section>
+
+  <script>
+    (() => {
+      'use strict';
+
+      // Фоновая музыка загружается по прямой ссылке на MP3.
+      // Воспроизведение запускается только после нажатия «Погнали!».
+      const bgMusic = new Audio('https://cdn.dbimg.app/SuTj8Nf1.mp3');
+      bgMusic.loop = true;
+      bgMusic.preload = 'auto';
+
+      const TIME_LIMIT_SECONDS = 3.5;
+      const MAX_LIVES = 5;
+      const BONUS_STREAK = 5;
+      const LAUGH_DURATION_MS = 1000;
+      const WORDS = [
+        'чёрт',
+        'буллинг',
+        'водка',
+        'ребёнок',
+        'Владик',
+        'блять',
+        'сука',
+        'мразь',
+        'кража',
+        'статья',
+        'срок',
+        'ходка',
+        'воровство',
+        'вор',
+        'Влад',
+        'бля',
+        'блядь',
+        'пизда',
+        'хуй',
+        'хйу',
+        'сигарета',
+        'сижки',
+        'сижка',
+        'пьяница',
+        'похмелье',
+        'опохмел',
+        'мелочь',
+        'шелупонь',
+        'феня',
+        'козёл',
+        'петух',
+        'попуск',
+        'параша',
+        'зона',
+        'зэк',
+        'мусора',
+        'шухер',
+        'менты',
+        'атас',
+        'жопа',
+        'ёпта'
+      ];
+
+      const $ = (id) => document.getElementById(id);
+      const wordElement = $('word');
+      const scoreElement = $('score-value');
+      const livesElement = $('lives');
+      const timerProgress = $('timer-progress');
+      const timerTrack = $('timer-track');
+      const form = $('answer-form');
+      const input = $('answer-input');
+      const answerButton = $('answer-button');
+      const gameOverScreen = $('game-over');
+      const finalScore = $('final-score');
+      const restartButton = $('restart-button');
+      const startButton = $('start-button');
+
+      let score = 0;
+      let lives = MAX_LIVES;
+      let streak = 0;
+      let currentWord = '';
+      let deadline = 0;
+      let gameOver = false;
+      let gameStarted = false;
+      let transitioning = false;
+      let previousWord = '';
+      let wordDeck = [];
+      let reactionTimeout = null;
+      let timerFrame = null;
+
+      // Нормализация регистра, пробелов и «ё/е».
+      function normalizeWord(value) {
+        return value.trim().toLocaleLowerCase('ru-RU').replace(/ё/g, 'е').replace(/\s+/g, ' ');
+      }
+
+      // Перемешать весь список (Fisher–Yates), чтобы каждое слово
+      // выпало ровно один раз до обновления колоды.
+      function refillWordDeck() {
+        wordDeck = [...WORDS];
+
+        for (let i = wordDeck.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [wordDeck[i], wordDeck[j]] = [wordDeck[j], wordDeck[i]];
+        }
+
+        // Колода извлекается с конца массива. Если первое слово новой
+        // колоды совпало с предыдущим, меняем его местами с другим.
+        if (
+          wordDeck.length > 1 &&
+          normalizeWord(wordDeck[wordDeck.length - 1]) === normalizeWord(previousWord)
+        ) {
+          const replacementIndex = wordDeck.findIndex(
+            (word, index) =>
+              index !== wordDeck.length - 1 &&
+              normalizeWord(word) !== normalizeWord(previousWord)
+          );
+
+          if (replacementIndex !== -1) {
+            const lastIndex = wordDeck.length - 1;
+            [wordDeck[lastIndex], wordDeck[replacementIndex]] =
+              [wordDeck[replacementIndex], wordDeck[lastIndex]];
+          }
+        }
+      }
+
+      function chooseWord() {
+        if (WORDS.length === 0) return 'СЛОВО';
+        if (wordDeck.length === 0) refillWordDeck();
+
+        const next = wordDeck.pop();
+        previousWord = next;
+        return next;
+      }
+
+      function renderLives() {
+        // Сердечки — единственный индикатор жизней.
+        livesElement.textContent = '❤️'.repeat(lives) + '🖤'.repeat(MAX_LIVES - lives);
+        livesElement.setAttribute('aria-label', `Жизни: ${lives} из ${MAX_LIVES}`);
+      }
+
+      function renderScore() {
+        scoreElement.textContent = String(score);
+      }
+
+      function setProgress(fraction) {
+        const safeFraction = Math.max(0, Math.min(1, fraction));
+        timerProgress.style.transform = `scaleX(${safeFraction})`;
+        timerTrack.setAttribute('aria-valuenow', String(Math.round(safeFraction * 100)));
+      }
+
+      function focusInput() {
+        if (!gameOver && !transitioning) {
+          try { input.focus({ preventScroll: true }); }
+          catch (_) { input.focus(); }
+        }
+      }
+
+      function startNewWord() {
+        if (gameOver) return;
+        transitioning = false;
+        currentWord = chooseWord();
+        wordElement.textContent = currentWord;
+        input.value = '';
+        input.disabled = false;
+        answerButton.disabled = false;
+        deadline = Date.now() + TIME_LIMIT_SECONDS * 1000;
+        setProgress(1);
+        focusInput();
+      }
+
+      function updateTimer() {
+        if (!gameStarted || gameOver || transitioning || deadline === 0) return;
+        const remaining = deadline - Date.now();
+        const fraction = remaining / (TIME_LIMIT_SECONDS * 1000);
+        setProgress(fraction);
+        if (remaining <= 0) loseLife('timeout');
+      }
+
+      function tick() {
+        updateTimer();
+        timerFrame = window.requestAnimationFrame(tick);
+      }
+
+      function submitAnswer() {
+        if (gameOver || transitioning || !currentWord) return;
+        const answer = normalizeWord(input.value);
+        if (!answer) {
+          input.focus();
+          return;
+        }
+
+        // Enter и кнопка формы используют один и тот же обработчик submit.
+        if (answer === normalizeWord(currentWord)) {
+          score += 1;
+          streak += 1;
+          renderScore();
+
+          if (streak > 0 && streak % BONUS_STREAK === 0) {
+            if (lives < MAX_LIVES) {
+              lives += 1;
+              renderLives();
+            }
+          }
+
+          startNewWord();
+        } else {
+          loseLife('wrong');
+        }
+      }
+
+      function loseLife(reason) {
+        // За одно слово учитывается только одно событие потери жизни.
+        if (gameOver || transitioning) return;
+        transitioning = true;
+        deadline = 0;
+        lives = Math.max(0, lives - 1);
+        streak = 0;
+        renderLives();
+        setProgress(0);
+        input.disabled = true;
+        answerButton.disabled = true;
+
+        // Показать смеющуюся картинку и глитч ровно на 1 секунду.
+        document.body.classList.add('laughing', 'glitch');
+        window.clearTimeout(reactionTimeout);
+        reactionTimeout = window.setTimeout(() => {
+          document.body.classList.remove('laughing', 'glitch');
+          if (lives <= 0) {
+            finishGame();
+          } else {
+            startNewWord();
+          }
+        }, LAUGH_DURATION_MS);
+      }
+
+      function finishGame() {
+        gameOver = true;
+        transitioning = false;
+        deadline = 0;
+        input.disabled = true;
+        answerButton.disabled = true;
+        setProgress(0);
+        finalScore.textContent = `Твой счёт: ${score}`;
+        gameOverScreen.classList.add('visible');
+
+        // Отправляем итоговый счёт, если игра запущена в среде Telegram Games.
+        try {
+          if (window.TelegramGameProxy && typeof window.TelegramGameProxy.sendScore === 'function') {
+            window.TelegramGameProxy.sendScore(score);
+          } else {
+            console.info('TelegramGameProxy.sendScore недоступен в этом браузере. Счёт:', score);
+          }
+        } catch (error) {
+          console.warn('Не удалось отправить счёт в Telegram:', error);
+        }
+      }
+
+      function startGame() {
+        if (gameStarted || gameOver) return;
+        gameStarted = true;
+
+        // play() вызывается непосредственно по нажатию пользователя,
+        // чтобы браузер разрешил запуск звука. Если поток недоступен
+        // или воспроизведение запрещено, игра продолжит работать без музыки.
+        const musicPromise = bgMusic.play();
+        if (musicPromise && typeof musicPromise.catch === 'function') {
+          musicPromise.catch((error) => {
+            console.warn('Не удалось запустить фоновую музыку:', error);
+          });
+        }
+
+        document.body.classList.add('started');
+        renderScore();
+        renderLives();
+        startNewWord();
+        timerFrame = window.requestAnimationFrame(tick);
+      }
+
+      function restartGame() {
+        window.clearTimeout(reactionTimeout);
+        document.body.classList.remove('laughing', 'glitch');
+        score = 0;
+        lives = MAX_LIVES;
+        streak = 0;
+        currentWord = '';
+        previousWord = '';
+        wordDeck = [];
+        deadline = 0;
+        gameOver = false;
+        gameStarted = true;
+        transitioning = false;
+        document.body.classList.add('started');
+        renderScore();
+        renderLives();
+        gameOverScreen.classList.remove('visible');
+        startNewWord();
+      }
+
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        submitAnswer();
+      });
+
+      startButton.addEventListener('click', startGame);
+      restartButton.addEventListener('click', restartGame);
+
+      // Предзагрузка обеих картинок предотвращает задержку при переключении.
+      const preloadImages = [
+        'https://i.imgur.com/gyjiB1r.jpeg',
+        'https://i.imgur.com/DMU0B3f.jpeg'
+      ];
+      preloadImages.forEach((src) => {
+        const image = new Image();
+        image.src = src;
+      });
+
+      renderScore();
+      renderLives();
+      setProgress(1);
+
+      window.addEventListener('pagehide', () => {
+        if (timerFrame !== null) window.cancelAnimationFrame(timerFrame);
+        window.clearTimeout(reactionTimeout);
+      });
+    })();
+  </script>
+</body>
+</html>
