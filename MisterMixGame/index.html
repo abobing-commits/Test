@@ -9,6 +9,7 @@
     :root {
       --normal-image: url("https://i.imgur.com/gyjiB1r.jpeg");
       --laugh-image: url("https://i.imgur.com/DMU0B3f.jpeg");
+      --fake-image: url("https://i.imgur.com/kmZlE0q.jpeg");
       --safe-top: env(safe-area-inset-top, 0px);
       --safe-bottom: env(safe-area-inset-bottom, 0px);
     }
@@ -28,7 +29,7 @@
 
     body { color: #fff; }
 
-    /* Полноэкранные слои фона: второй становится видимым на время смеха. */
+    /* Полноэкранные слои: обычный, смех при потере жизни и отдельный фон подмены. */
     .background {
       position: fixed;
       inset: 0;
@@ -52,13 +53,22 @@
       transition: opacity 50ms linear;
     }
 
-    body.laughing #normal-background { opacity: 0; }
+    #fake-background {
+      z-index: 2;
+      background-image: var(--fake-image);
+      opacity: 0;
+      transition: opacity 0ms linear;
+    }
+
+    body.laughing #normal-background,
+    body.faking #normal-background { opacity: 0; }
     body.laughing #laugh-background { opacity: 1; }
+    body.faking #fake-background { opacity: 1; }
 
     /* Лёгкое затемнение помогает читать текст, не создавая отдельной панели. */
     #vignette {
       position: fixed;
-      z-index: 2;
+      z-index: 3;
       inset: 0;
       pointer-events: none;
       background: linear-gradient(180deg, rgba(0,0,0,.35), transparent 24%, transparent 66%, rgba(0,0,0,.34));
@@ -66,7 +76,7 @@
 
     #game {
       position: relative;
-      z-index: 3;
+      z-index: 4;
       width: 100%;
       height: 100%;
       min-height: 100dvh;
@@ -286,6 +296,20 @@
       75% { transform: translate3d(-2px,-1px,0); }
     }
 
+    /* Короткая тряска только самого слова при фейковой подмене. */
+    #word.word-glitch {
+      animation: fake-word-glitch 280ms steps(2, end) both;
+    }
+
+    @keyframes fake-word-glitch {
+      0% { transform: translateX(0) skewX(0); filter: none; }
+      18% { transform: translateX(-7px) skewX(-2deg); filter: hue-rotate(35deg); }
+      36% { transform: translateX(6px) skewX(2deg); }
+      54% { transform: translateX(-4px) skewX(-1deg); filter: blur(.6px); }
+      72% { transform: translateX(3px); }
+      100% { transform: translateX(0) skewX(0); filter: none; }
+    }
+
     #game-over {
       position: fixed;
       z-index: 30;
@@ -333,6 +357,7 @@
 <body>
   <div id="normal-background" class="background" aria-hidden="true"></div>
   <div id="laugh-background" class="background" aria-hidden="true"></div>
+  <div id="fake-background" class="background" aria-hidden="true"></div>
   <div id="vignette" aria-hidden="true"></div>
   <div id="red-flash" aria-hidden="true"></div>
 
@@ -384,10 +409,17 @@
       bgMusic.loop = true;
       bgMusic.preload = 'auto';
 
-      const TIME_LIMIT_SECONDS = 3.5;
-      const MAX_LIVES = 5;
+      const DEFAULT_TIME_LIMIT_SECONDS = 4;
+      const SHORT_WORD_TIME_LIMIT_SECONDS = 3;
+      const SCORE_10_TIME_LIMIT_SECONDS = 3;
+      const SCORE_10_SHORT_WORD_TIME_LIMIT_SECONDS = 2.6;
+      const HIDDEN_LETTER_CHANCE = 0.30; // 30% для каждого нового целевого слова.
+      const MAX_LIVES = 3;
       const BONUS_STREAK = 5;
       const LAUGH_DURATION_MS = 1000;
+      const FAKE_SWAP_CHANCE = 0.40; // 40% на одно слово после начала ввода.
+      const FAKE_LAUGH_DURATION_MS = 500;
+      const FAKE_WORD_GLITCH_DURATION_MS = 320;
       const WORDS = [
         'чёрт',
         'буллинг',
@@ -449,14 +481,21 @@
       let score = 0;
       let lives = MAX_LIVES;
       let streak = 0;
-      let currentWord = '';
+      let currentWord = ''; // Всегда хранит полное исходное слово для проверки.
+      let hiddenLetterIndex = -1;
+      let currentRoundTimeLimitMs = DEFAULT_TIME_LIMIT_SECONDS * 1000;
       let deadline = 0;
       let gameOver = false;
       let gameStarted = false;
       let transitioning = false;
       let previousWord = '';
       let wordDeck = [];
+      let deckStage = '';
+      let fakeSwapCheckedForCurrentWord = false;
       let reactionTimeout = null;
+      let laughBackgroundTimeout = null;
+      let fakeBackgroundTimeout = null;
+      let wordGlitchTimeout = null;
       let timerFrame = null;
 
       // Нормализация регистра, пробелов и «ё/е».
@@ -464,30 +503,113 @@
         return value.trim().toLocaleLowerCase('ru-RU').replace(/ё/g, 'е').replace(/\s+/g, ' ');
       }
 
-      // Перемешать весь список (Fisher–Yates), чтобы каждое слово
-      // выпало ровно один раз до обновления колоды.
-      function refillWordDeck() {
-        wordDeck = [...WORDS];
+      // Выбираем длительность по длине слова и текущему счёту.
+      // До 10 очков: короткие — 3 с, остальные — 4 с.
+      // Начиная с 10 очков: короткие — 2,6 с, остальные — 3 с.
+      function getTimeLimitForWord(word) {
+        const isShortWord = Array.from(word).length <= 5;
 
-        for (let i = wordDeck.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [wordDeck[i], wordDeck[j]] = [wordDeck[j], wordDeck[i]];
+        if (score >= 10) {
+          return isShortWord
+            ? SCORE_10_SHORT_WORD_TIME_LIMIT_SECONDS
+            : SCORE_10_TIME_LIMIT_SECONDS;
         }
 
-        // Колода извлекается с конца массива. Если первое слово новой
-        // колоды совпало с предыдущим, меняем его местами с другим.
+        return isShortWord
+          ? SHORT_WORD_TIME_LIMIT_SECONDS
+          : DEFAULT_TIME_LIMIT_SECONDS;
+      }
+
+      // Сохраняем оригинал в currentWord, а на экране иногда прячем
+      // одну случайную букву. Проверка ответа всегда идёт по оригиналу.
+      function setTargetWord(word) {
+        currentWord = word;
+        const visibleCharacters = Array.from(word);
+        hiddenLetterIndex = -1;
+
+        if (
+          visibleCharacters.length >= 3 &&
+          Math.random() < HIDDEN_LETTER_CHANCE
+        ) {
+          hiddenLetterIndex = Math.floor(Math.random() * visibleCharacters.length);
+          visibleCharacters[hiddenLetterIndex] = '_';
+        }
+
+        wordElement.textContent = visibleCharacters.join('');
+      }
+
+      // ==============================
+      // ДИНАМИЧЕСКАЯ СЛОЖНОСТЬ И КОЛОДА
+      // ==============================
+
+      function getDifficultyStage() {
+        if (score < 10) return 'short';
+        if (score <= 20) return 'medium';
+        return 'long';
+      }
+
+      // Фильтруем исходный список по текущему счёту.
+      // Если слов нужной длины нет, используем общий массив.
+      function getWordsForCurrentStage() {
+        const stage = getDifficultyStage();
+        const filteredWords = WORDS.filter((word) => {
+          const length = word.length;
+          if (stage === 'short') return length >= 3 && length <= 5;
+          if (stage === 'medium') return length >= 6 && length <= 8;
+          return length >= 9;
+        });
+
+        if (filteredWords.length === 0) {
+          return [...WORDS];
+        }
+
+        // Если в уровне сложности осталось только то же самое слово,
+        // которое выпало предыдущим, берём одно случайное слово из общего
+        // списка. Это сохраняет правило «не повторять подряд» даже в фазе
+        // 9+, где в исходном списке сейчас только одно подходящее слово.
+        const alternatives = filteredWords.filter(
+          (word) => normalizeWord(word) !== normalizeWord(previousWord)
+        );
+        if (alternatives.length === 0 && previousWord) {
+          const fallbackWords = WORDS.filter(
+            (word) => normalizeWord(word) !== normalizeWord(previousWord)
+          );
+          if (fallbackWords.length > 0) {
+            return [fallbackWords[Math.floor(Math.random() * fallbackWords.length)]];
+          }
+        }
+
+        return filteredWords;
+      }
+
+      function shuffleWords(words) {
+        const shuffled = [...words];
+        for (let i = shuffled.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
+        return shuffled;
+      }
+
+      // Колода содержит только слова текущей сложности. Каждое слово
+      // выпадает один раз за колоду, затем список перемешивается заново.
+      function refillWordDeck() {
+        wordDeck = shuffleWords(getWordsForCurrentStage());
+        deckStage = getDifficultyStage();
+
+        // Извлекаем слова с конца. Избегаем совпадения на границе колод,
+        // когда в текущей выборке есть хотя бы одна альтернатива.
+        const lastIndex = wordDeck.length - 1;
         if (
           wordDeck.length > 1 &&
-          normalizeWord(wordDeck[wordDeck.length - 1]) === normalizeWord(previousWord)
+          normalizeWord(wordDeck[lastIndex]) === normalizeWord(previousWord)
         ) {
           const replacementIndex = wordDeck.findIndex(
             (word, index) =>
-              index !== wordDeck.length - 1 &&
+              index !== lastIndex &&
               normalizeWord(word) !== normalizeWord(previousWord)
           );
-
           if (replacementIndex !== -1) {
-            const lastIndex = wordDeck.length - 1;
             [wordDeck[lastIndex], wordDeck[replacementIndex]] =
               [wordDeck[replacementIndex], wordDeck[lastIndex]];
           }
@@ -496,11 +618,51 @@
 
       function chooseWord() {
         if (WORDS.length === 0) return 'СЛОВО';
-        if (wordDeck.length === 0) refillWordDeck();
+
+        const currentStage = getDifficultyStage();
+        if (wordDeck.length === 0 || deckStage !== currentStage) {
+          refillWordDeck();
+        }
 
         const next = wordDeck.pop();
         previousWord = next;
         return next;
+      }
+
+      // Для фейковой подмены берём другое слово из оставшейся колоды.
+      // Если в текущей категории нет альтернативы (например, на высокой
+      // сложности остался единственный длинный вариант), используем любое
+      // другое слово из общего списка, чтобы подмена действительно отличалась.
+      function chooseFakeReplacement() {
+        const currentStage = getDifficultyStage();
+        if (wordDeck.length === 0 || deckStage !== currentStage) {
+          refillWordDeck();
+        }
+
+        let alternatives = wordDeck.filter(
+          (word) => normalizeWord(word) !== normalizeWord(currentWord)
+        );
+
+        if (alternatives.length > 0) {
+          const replacement = alternatives[Math.floor(Math.random() * alternatives.length)];
+          const deckIndex = wordDeck.indexOf(replacement);
+          if (deckIndex !== -1) wordDeck.splice(deckIndex, 1);
+          previousWord = replacement;
+          return replacement;
+        }
+
+        const fallbackWords = WORDS.filter(
+          (word) => normalizeWord(word) !== normalizeWord(currentWord)
+        );
+        if (fallbackWords.length === 0) return currentWord;
+
+        const replacement = fallbackWords[Math.floor(Math.random() * fallbackWords.length)];
+        // После вне-категорийной подмены соберём чистую колоду уровня
+        // заново при следующем обычном выборе слова.
+        wordDeck = [];
+        deckStage = '';
+        previousWord = replacement;
+        return replacement;
       }
 
       function renderLives() {
@@ -529,12 +691,14 @@
       function startNewWord() {
         if (gameOver) return;
         transitioning = false;
-        currentWord = chooseWord();
-        wordElement.textContent = currentWord;
+        setTargetWord(chooseWord());
+        fakeSwapCheckedForCurrentWord = false;
+        wordElement.classList.remove('word-glitch');
         input.value = '';
         input.disabled = false;
         answerButton.disabled = false;
-        deadline = Date.now() + TIME_LIMIT_SECONDS * 1000;
+        currentRoundTimeLimitMs = getTimeLimitForWord(currentWord) * 1000;
+        deadline = Date.now() + currentRoundTimeLimitMs;
         setProgress(1);
         focusInput();
       }
@@ -542,7 +706,7 @@
       function updateTimer() {
         if (!gameStarted || gameOver || transitioning || deadline === 0) return;
         const remaining = deadline - Date.now();
-        const fraction = remaining / (TIME_LIMIT_SECONDS * 1000);
+        const fraction = remaining / currentRoundTimeLimitMs;
         setProgress(fraction);
         if (remaining <= 0) loseLife('timeout');
       }
@@ -550,6 +714,78 @@
       function tick() {
         updateTimer();
         timerFrame = window.requestAnimationFrame(tick);
+      }
+
+      // ==============================
+      // ФЕЙКОВАЯ ПОДМЕНА ВО ВРЕМЯ ВВОДА
+      // ==============================
+
+      // Смеющаяся картинка используется только при потере жизни.
+      function showLaughingBackground(durationMs) {
+        window.clearTimeout(laughBackgroundTimeout);
+        window.clearTimeout(fakeBackgroundTimeout);
+        fakeBackgroundTimeout = null;
+        document.body.classList.remove('faking');
+        document.body.classList.add('laughing');
+        laughBackgroundTimeout = window.setTimeout(() => {
+          document.body.classList.remove('laughing');
+          laughBackgroundTimeout = null;
+        }, durationMs);
+      }
+
+      // Третья картинка показывается только при фейковой подмене.
+      function showFakeBackground(durationMs) {
+        window.clearTimeout(fakeBackgroundTimeout);
+        document.body.classList.remove('laughing');
+        document.body.classList.add('faking');
+        fakeBackgroundTimeout = window.setTimeout(() => {
+          document.body.classList.remove('faking');
+          fakeBackgroundTimeout = null;
+        }, durationMs);
+      }
+
+      function triggerFakeWordSwap() {
+        const replacement = chooseFakeReplacement();
+        if (!replacement || normalizeWord(replacement) === normalizeWord(currentWord)) {
+          return;
+        }
+
+        // Подмена полностью очищает поле ввода. Новое целевое слово
+        // получает собственный независимый шанс 30% на скрытую букву.
+        setTargetWord(replacement);
+        input.value = '';
+
+        // Таймер при подмене не перезапускается: сохраняем остаток времени,
+        // но ограничиваем его длительностью, положенной новому слову.
+        const remainingTimeMs = Math.max(0, deadline - Date.now());
+        currentRoundTimeLimitMs = getTimeLimitForWord(currentWord) * 1000;
+        deadline = Date.now() + Math.min(remainingTimeMs, currentRoundTimeLimitMs);
+
+        showFakeBackground(FAKE_LAUGH_DURATION_MS);
+
+        window.clearTimeout(wordGlitchTimeout);
+        wordElement.classList.remove('word-glitch');
+        void wordElement.offsetWidth; // Перезапуск CSS-анимации.
+        wordElement.classList.add('word-glitch');
+        wordGlitchTimeout = window.setTimeout(() => {
+          wordElement.classList.remove('word-glitch');
+          wordGlitchTimeout = null;
+        }, FAKE_WORD_GLITCH_DURATION_MS);
+      }
+
+      function handleAnswerInput() {
+        if (!gameStarted || gameOver || transitioning || !currentWord) return;
+
+        const typed = normalizeWord(input.value);
+        if (!typed || typed === normalizeWord(currentWord)) return;
+        if (fakeSwapCheckedForCurrentWord) return;
+
+        // 15% проверяются один раз на слово, после первого непустого
+        // неполного ввода, а не на каждую букву.
+        fakeSwapCheckedForCurrentWord = true;
+        if (Math.random() < FAKE_SWAP_CHANCE) {
+          triggerFakeWordSwap();
+        }
       }
 
       function submitAnswer() {
@@ -591,11 +827,14 @@
         input.disabled = true;
         answerButton.disabled = true;
 
-        // Показать смеющуюся картинку и глитч ровно на 1 секунду.
-        document.body.classList.add('laughing', 'glitch');
+        // Показать смеющуюся картинку на 1 секунду и запустить глитч.
+        showLaughingBackground(LAUGH_DURATION_MS);
+        document.body.classList.add('glitch');
         window.clearTimeout(reactionTimeout);
         reactionTimeout = window.setTimeout(() => {
           document.body.classList.remove('laughing', 'glitch');
+          window.clearTimeout(laughBackgroundTimeout);
+          laughBackgroundTimeout = null;
           if (lives <= 0) {
             finishGame();
           } else {
@@ -649,7 +888,11 @@
 
       function restartGame() {
         window.clearTimeout(reactionTimeout);
-        document.body.classList.remove('laughing', 'glitch');
+        window.clearTimeout(laughBackgroundTimeout);
+        window.clearTimeout(fakeBackgroundTimeout);
+        window.clearTimeout(wordGlitchTimeout);
+        document.body.classList.remove('laughing', 'faking', 'glitch');
+        wordElement.classList.remove('word-glitch');
         score = 0;
         lives = MAX_LIVES;
         streak = 0;
@@ -672,13 +915,16 @@
         submitAnswer();
       });
 
+      input.addEventListener('input', handleAnswerInput);
+
       startButton.addEventListener('click', startGame);
       restartButton.addEventListener('click', restartGame);
 
-      // Предзагрузка обеих картинок предотвращает задержку при переключении.
+      // Предзагрузка всех трёх картинок предотвращает задержку при переключении.
       const preloadImages = [
         'https://i.imgur.com/gyjiB1r.jpeg',
-        'https://i.imgur.com/DMU0B3f.jpeg'
+        'https://i.imgur.com/DMU0B3f.jpeg',
+        'https://i.imgur.com/kmZlE0q.jpeg'
       ];
       preloadImages.forEach((src) => {
         const image = new Image();
@@ -692,6 +938,9 @@
       window.addEventListener('pagehide', () => {
         if (timerFrame !== null) window.cancelAnimationFrame(timerFrame);
         window.clearTimeout(reactionTimeout);
+        window.clearTimeout(laughBackgroundTimeout);
+        window.clearTimeout(fakeBackgroundTimeout);
+        window.clearTimeout(wordGlitchTimeout);
       });
     })();
   </script>
